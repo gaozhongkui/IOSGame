@@ -1,0 +1,53 @@
+# Xcode
+# ==================================
+
+## Build artifacts
+build/
+DerivedData/
+
+## Swift Package Manager
+.build/
+.swiftpm/
+
+## Xcode project files
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcworkspace/xcshareddata/
+*.xcodeproj/project.xcworkspace/
+
+## Swift Playground
+*.playground/xcuserdata/
+
+## Carthage
+Carthage/Build/
+
+## CocoaPods
+Pods/
+
+
+## Fastlane
+fastlane/report.xml
+fastlane/test_output/
+fastlane/screenshots/
+fastlane/screenshots/fastlane_tmp/
+fastlane/report.html
+fastlane/scan.log
+fastlane/README.md
+
+## Other
+.swiftlint.yml
+R.generated.swift
+Lottie/Lottie.podspec
+
+## System generated files
+.DS_Store
+
+## IDE temp files
+*.xcworkspace/xcuserdata/
+*.xcworkspace/xcshareddata/
+*.xccheckout
+*.swiftlint.yml
+builds/
+*.ipa
+*.dSYM.zip
+*.dSYM
