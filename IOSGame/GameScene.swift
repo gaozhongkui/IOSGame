@@ -26,9 +26,9 @@ class GameScene: SKScene {
         let location = touch.location(in: self)
 
         if location.x > frame.midX {
-            bottle.fillNextSlot()
+            bottle.addFullSlot(color: .random)
         } else {
-            bottle.pourAnimation(toAngle: .pi / 2, duration: 1.2)
+            bottle.pourSlot()
         }
     }
 
