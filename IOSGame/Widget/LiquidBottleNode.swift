@@ -8,13 +8,16 @@
 import SpriteKit
 
 class LiquidBottleNode: SKNode {
-    // MARK: - 私有属性
-    private var bottleContainer: SKNode!
+    // MARK: - 属性
     private var liquid: SKSpriteNode?
     private let bottleHeight: CGFloat
     private var currentPercent: CGFloat = 0.0
+    private var pourEmitter: SKEmitterNode?
     
-    // 独立的 Uniforms，确保每个瓶子的状态独立
+    // 颜色配置（从下往上）
+    private let slotColors: [UIColor] = [.systemRed, .systemOrange, .systemYellow, .systemGreen, .systemTeal, .systemBlue, .systemPurple, .brown]
+    
+    // Uniforms
     private let percentUniform = SKUniform(name: "u_percent", float: 0.0)
     private let rotationUniform = SKUniform(name: "u_rotation", float: 0.0)
     
@@ -25,60 +28,47 @@ class LiquidBottleNode: SKNode {
         setupBottle(imageName: bottleImageName)
     }
     
-    required init?(coder aDecoder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
+    required init?(coder aDecoder: NSCoder) { fatalError("init") }
     
     // MARK: - 设置方法
     private func setupBottle(imageName: String) {
         let bottleTexture = SKTexture(imageNamed: imageName)
-        let bottleWidth = (bottleTexture.size().width * bottleHeight) / bottleTexture.size().height
-        let bottleSize = CGSize(width: bottleWidth, height: bottleHeight)
+        let ratio = bottleTexture.size().width / bottleTexture.size().height
+        let bottleSize = CGSize(width: bottleHeight * ratio, height: bottleHeight)
         
+        // 1. 裁剪节点（限制液体在瓶内）
         let cropNode = SKCropNode()
-        let mask = SKSpriteNode(texture: bottleTexture, size: bottleSize)
-        cropNode.maskNode = mask
+        cropNode.maskNode = SKSpriteNode(texture: bottleTexture, size: bottleSize)
         
-        // 生成纹理
-        let paletteTexture = createEightSlotTexture()
-        
-        // 液体节点
-        let liquidNode = SKSpriteNode(color: .white, size: bottleSize)
-        
+        // 2. 液体 Shader
         let shaderSource = """
         void main() {
             vec2 uv = v_tex_coord;
             float time = u_time * 2.5;
-            
             float tilt = (uv.x - 0.5) * tan(u_rotation);
             float wave = sin(uv.x * 7.0 + time) * 0.008;
-            
             float currentLimit = u_percent - 0.02 + wave - tilt; 
+            
             if (uv.y > currentLimit) discard;
 
             vec4 color = texture2D(u_palette, vec2(0.5, uv.y));
-            
             float slotBoundary = fract(uv.y * 8.0);
-            if (slotBoundary < 0.03 || slotBoundary > 0.97) {
-                color.rgb *= 0.8;
-            }
-
-            if (uv.y > currentLimit - 0.02) {
-                color.rgb += 0.2;
-            }
+            if (slotBoundary < 0.03 || slotBoundary > 0.97) color.rgb *= 0.8;
+            if (uv.y > currentLimit - 0.02) color.rgb += 0.2;
             
             gl_FragColor = color;
         }
         """
-        
         let shader = SKShader(source: shaderSource)
-        shader.addUniform(SKUniform(name: "u_palette", texture: paletteTexture))
+        shader.addUniform(SKUniform(name: "u_palette", texture: createEightSlotTexture()))
         shader.addUniform(percentUniform)
         shader.addUniform(rotationUniform)
         
+        let liquidNode = SKSpriteNode(color: .white, size: bottleSize)
         liquidNode.shader = shader
         self.liquid = liquidNode
         
+        // 3. 瓶子外壳
         let bottleBorder = SKSpriteNode(texture: bottleTexture, size: bottleSize)
         bottleBorder.zPosition = 10
         bottleBorder.alpha = 0.4
@@ -88,47 +78,143 @@ class LiquidBottleNode: SKNode {
         self.addChild(bottleBorder)
     }
 
-    private func createEightSlotTexture() -> SKTexture {
-        let colors: [UIColor] = [.systemRed, .systemOrange, .systemYellow, .systemGreen, .systemTeal, .systemBlue, .systemPurple, .brown]
-        let size = CGSize(width: 1, height: 256)
-        UIGraphicsBeginImageContext(size)
-        let context = UIGraphicsGetCurrentContext()!
-        let slotHeight = size.height / 8.0
-        for i in 0..<8 {
-            let rect = CGRect(x: 0, y: CGFloat(i) * slotHeight, width: size.width, height: slotHeight)
-            context.setFillColor(colors[i].cgColor)
-            context.fill(rect)
-        }
-        let image = UIGraphicsGetImageFromCurrentImageContext()
-        UIGraphicsEndImageContext()
-        let tex = SKTexture(image: image!)
-        tex.filteringMode = .nearest
-        return tex
-    }
+    // MARK: - 逻辑方法
 
-    // MARK: - 外部调用接口
-    
-    /// 填充下一个槽位
+    /// 倒入一层颜色
     func fillNextSlot(duration: TimeInterval = 0.5) {
         let startP = currentPercent
         let targetP = min(currentPercent + 0.125, 1.0)
         
-        let fillAction = SKAction.customAction(withDuration: duration) { _, elapsedTime in
+        let fillAction = SKAction.customAction(withDuration: duration) { node, elapsedTime in
             let t = elapsedTime / CGFloat(duration)
-            let currentP = startP + (targetP - startP) * t
-            self.percentUniform.floatValue = Float(currentP)
+            self.currentPercent = startP + (targetP - startP) * t
+            self.percentUniform.floatValue = Float(self.currentPercent)
         }
-        fillAction.timingMode = .easeInEaseOut
         self.run(fillAction)
-        currentPercent = targetP
     }
     
-    /// 倾斜瓶子
-    func tilt(to angle: CGFloat, duration: TimeInterval = 0.4) {
-        let rotate = SKAction.rotate(toAngle: angle, duration: duration)
-        let sync = SKAction.customAction(withDuration: duration) { _, _ in
-            self.rotationUniform.floatValue = Float(self.zRotation)
+    /// 倒出动画：包含倾斜、粒子流出、高度减少、恢复原位
+    func pourAnimation(toAngle angle: CGFloat, duration: TimeInterval = 1.2) {
+        guard currentPercent > 0 else { return }
+        
+        let startP = currentPercent
+        let targetP = max(currentPercent - 0.125, 0.0)
+        let topColor = getCurrentTopColor()
+        
+        // 第一步：快速倾斜
+        let tiltDuration = duration * 0.3
+        let tiltAction = SKAction.customAction(withDuration: tiltDuration) { [weak self] _, elapsedTime in
+            let t = elapsedTime / CGFloat(tiltDuration)
+            self?.zRotation = angle * t
+            self?.rotationUniform.floatValue = Float(self?.zRotation ?? 0)
         }
-        self.run(SKAction.group([rotate, sync]))
+        
+        // 第二步：流出阶段
+        let pourDuration = duration * 0.5
+        let startPour = SKAction.run { [weak self] in self?.startPourParticle(color: topColor) }
+        let draining = SKAction.customAction(withDuration: pourDuration) { [weak self] _, elapsedTime in
+            let t = elapsedTime / CGFloat(pourDuration)
+            let cp = startP - (startP - targetP) * t
+            self?.currentPercent = cp
+            self?.percentUniform.floatValue = Float(cp)
+        }
+        
+        // 第三步：停止并回正
+        let stopPour = SKAction.run { [weak self] in self?.stopPourParticle() }
+        let resetAction = SKAction.customAction(withDuration: 0.3) { [weak self] _, elapsedTime in
+            let t = 1.0 - (elapsedTime / 0.3)
+            self?.zRotation = angle * t
+            self?.rotationUniform.floatValue = Float(self?.zRotation ?? 0)
+        }
+        
+        self.run(SKAction.sequence([
+            tiltAction,
+            SKAction.group([startPour, draining]),
+            stopPour,
+            resetAction
+        ]))
+    }
+
+    // MARK: - 粒子系统（纯代码实现）
+    private func startPourParticle(color: UIColor) {
+        stopPourParticle()
+        
+        let emitter = SKEmitterNode()
+        
+        // 1. 生成更大的圆形纹理 (半径从 4 增加到 12)
+        emitter.particleTexture = createCircleTexture(radius: 12, color: .white)
+        
+        // 2. 数量与寿命
+        emitter.particleBirthRate = 80  // 颗粒变大后，速率可以稍微调低，防止过于拥挤
+        emitter.particleLifetime = 1.2
+        
+        // 3. 速度与角度
+        emitter.particleSpeed = 250
+        emitter.particleSpeedRange = 80
+        // 这里的角度需要根据瓶子 zRotation 动态调整（如果是向左倒）
+        emitter.emissionAngle = (self.zRotation > 0) ? .pi : 0
+        emitter.emissionAngleRange = 0.2 
+        
+        // 4. 颜色与混合
+        emitter.particleColor = color
+        emitter.particleColorBlendFactor = 1.0
+        
+        // 5. 核心：改大尺寸
+        emitter.particleScale = 0.8         // 初始缩放比例
+        emitter.particleScaleRange = 0.4    // 随机大小，让颗粒看起来不那么死板
+        emitter.particleScaleSpeed = -0.5   // 飞出后逐渐变小
+        
+        // 6. 物理感
+        emitter.yAcceleration = -1000       // 更强的重力，像液体坠落
+        emitter.particleAlphaSpeed = -0.6   // 消失前稍微变透明
+        
+        // 7. 位置：确保在瓶口位置
+        emitter.position = CGPoint(x: 0, y: bottleHeight / 2)
+        emitter.zPosition = 15 // 确保在瓶子图层之上
+        
+        self.addChild(emitter)
+        self.pourEmitter = emitter
+    }
+    
+    private func stopPourParticle() {
+        pourEmitter?.particleBirthRate = 0
+        let wait = SKAction.wait(forDuration: 1.0)
+        let remove = SKAction.removeFromParent()
+        pourEmitter?.run(SKAction.sequence([wait, remove]))
+        pourEmitter = nil
+    }
+
+    // MARK: - 辅助绘图
+    
+    private func createCircleTexture(radius: CGFloat, color: UIColor) -> SKTexture {
+        let size = CGSize(width: radius * 2, height: radius * 2)
+        UIGraphicsBeginImageContext(size)
+        let context = UIGraphicsGetCurrentContext()!
+        context.setFillColor(color.cgColor)
+        context.fillEllipse(in: CGRect(origin: .zero, size: size))
+        let image = UIGraphicsGetImageFromCurrentImageContext()
+        UIGraphicsEndImageContext()
+        return SKTexture(image: image!)
+    }
+    
+    private func createEightSlotTexture() -> SKTexture {
+        let size = CGSize(width: 1, height: 256)
+        UIGraphicsBeginImageContext(size)
+        let context = UIGraphicsGetCurrentContext()!
+        let slotH = size.height / 8.0
+        for i in 0..<8 {
+            context.setFillColor(slotColors[i].cgColor)
+            context.fill(CGRect(x: 0, y: CGFloat(i) * slotH, width: 1, height: slotH))
+        }
+        let image = UIGraphicsGetImageFromCurrentImageContext()
+        UIGraphicsEndImageContext()
+        return SKTexture(image: image!)
+    }
+    
+    private func getCurrentTopColor() -> UIColor {
+        // 计算当前水位在哪一层
+        let index = Int(ceil(currentPercent * 8) - 1)
+        let safeIndex = max(0, min(slotColors.count - 1, index))
+        return slotColors[safeIndex]
     }
 }

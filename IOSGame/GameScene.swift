@@ -28,11 +28,11 @@ class GameScene: SKScene {
         if location.x > frame.midX {
             bottle.fillNextSlot()
         } else {
-            bottle.tilt(to: .pi / 4)
+            bottle.pourAnimation(toAngle: .pi / 3, duration: 1.2)
         }
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        myBottle?.tilt(to: 0, duration: 0.3)
+      //  myBottle?.pourAnimation(toAngle: .pi / 3, duration: 1.2)
     }
 }
