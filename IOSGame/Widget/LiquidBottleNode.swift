@@ -54,7 +54,7 @@ class LiquidBottleNode: SKNode {
             vec2 uv = v_tex_coord;
             float time = u_time * 2.5;
             float safeRotation = clamp(u_rotation, -1.45, 1.45);
-            float tilt = (uv.x - 0.5) * tan(safeRotation);
+            float tilt = (uv.x - 0.5) * tan(safeRotation) * 0.8;
             float wave = sin(uv.x * 7.0 + time) * 0.008;
             float currentLimit = u_percent - 0.02 + wave - tilt; 
         
@@ -121,54 +121,54 @@ class LiquidBottleNode: SKNode {
     
     /// 倒出一层颜色
     func pourSlot(duration: TimeInterval = 0.8) {
-        // 只有有液体时才能倒出
         guard currentSlots > 0 else { return }
 
+        // 1. 记录起始和结束
         let startP = currentPercent
-        let topColor = getCurrentTopColor()
+        let nextSlots = currentSlots - 1 // 计算下一阶段的槽位数
+        let targetP = CGFloat(nextSlots) / CGFloat(maxSlots)
         
-        // 计算目标：减少一个槽位后的比例
-        let targetP = CGFloat(currentSlots - 1) / CGFloat(maxSlots)
+        let topColor = getCurrentTopColor()
         let angle: CGFloat = .pi / 2
         
-        // 倾斜动画
-        let tiltDuration = 0.3
-        let tiltAction = SKAction.customAction(withDuration: tiltDuration) { [weak self] _, elapsedTime in
-            let t = elapsedTime / CGFloat(tiltDuration)
+        // 2. 动画序列
+        let tiltAction = SKAction.customAction(withDuration: 0.3) { [weak self] _, elapsedTime in
+            let t = elapsedTime / 0.3
             self?.zRotation = angle * t
             self?.rotationUniform.floatValue = Float(self?.zRotation ?? 0)
         }
 
-        // 液体减少动画
         let draining = SKAction.customAction(withDuration: duration) { [weak self] _, elapsedTime in
             let t = elapsedTime / CGFloat(duration)
+            // 关键：在倒水过程中，百分比从 startP 线性降到 targetP
             let cp = startP - (startP - targetP) * t
             self?.percentUniform.floatValue = Float(cp)
         }
 
-        // 粒子逻辑
-        let startPour = SKAction.run { [weak self] in self?.startPourParticle(color: topColor) }
-        let stopPour = SKAction.run { [weak self] in self?.stopPourParticle() }
-        
-        // 回正动画
         let resetAction = SKAction.customAction(withDuration: 0.3) { [weak self] _, elapsedTime in
             let t = 1.0 - (elapsedTime / 0.3)
             self?.zRotation = angle * t
             self?.rotationUniform.floatValue = Float(self?.zRotation ?? 0)
         }
 
-        // 执行序列
-        let sequence = SKAction.sequence([
+        run(SKAction.sequence([
             tiltAction,
-            SKAction.group([startPour, draining]),
-            stopPour,
+            SKAction.group([
+                SKAction.run { [weak self] in self?.startPourParticle(color: topColor) },
+                draining
+            ]),
+            SKAction.run { [weak self] in self?.stopPourParticle() },
             resetAction,
             SKAction.run { [weak self] in
-                // 动画彻底结束后更新逻辑计数，确保下次计算准确
-                self?.currentSlots -= 1
+                // 动画彻底结束后，正式更新逻辑数据
+                self?.currentSlots = nextSlots
+                // 如果这一层倒完了，把 slotColors 对应位置设为透明
+                if nextSlots < (self?.slotColors.count ?? 0) {
+                    self?.slotColors[nextSlots] = .clear
+                    self?.updatePalette()
+                }
             }
-        ])
-        run(sequence)
+        ]))
     }
     
     private func updatePalette() {
@@ -200,19 +200,48 @@ class LiquidBottleNode: SKNode {
     
     private func startPourParticle(color: UIColor) {
         stopPourParticle()
+        
         let emitter = SKEmitterNode()
-        emitter.particleTexture = createCircleTexture(radius: 10, color: .white)
-        emitter.particleBirthRate = 100
+        
+        // 1. 纹理：稍微调小一点点，让液滴更精致
+        emitter.particleTexture = createCircleTexture(radius: 8, color: .white)
+        
+        // 2. 密度优化：大幅降低出生率 (从 80-100 降到 20-30)
+        // 这样粒子之间会有明显的间隙，看起来更像水滴
+        emitter.particleBirthRate = 25
         emitter.particleLifetime = 1.0
-        emitter.particleSpeed = 300
+        
+        // 3. 速度与扩散：增加随机性，让液滴散开一点
+        emitter.particleSpeed = 350
+        emitter.particleSpeedRange = 150 // 让有的快有的慢
         emitter.emissionAngle = (zRotation > 0) ? .pi : 0
+        emitter.emissionAngleRange = 0.25 // 稍微散开的角度
+        
+        // 4. 颜色
         emitter.particleColor = color
         emitter.particleColorBlendFactor = 1.0
-        emitter.particleScale = 0.6
-        emitter.particleScaleSpeed = -0.4
-        emitter.position = CGPoint(x: 0, y: bottleHeight / 2)
-        emitter.zPosition = 15
-        addChild(emitter)
+        
+        // 5. 尺寸变化：让液滴在飞行过程中变小
+        emitter.particleScale = 0.5
+        emitter.particleScaleRange = 0.2
+        emitter.particleScaleSpeed = -0.4 // 飞出后逐渐变小消失
+        
+        // 6. 物理感（关键）：加入重力感，让液滴呈抛物线落下
+        emitter.yAcceleration = -800 // 负值代表向下坠落
+        
+        // 7. 混合模式：如果是液体，通常用 Alpha 混合即可
+        emitter.particleAlpha = 1.0
+        emitter.particleAlphaSpeed = -0.8 // 快速淡出
+        
+        let tipPositionInBottle = CGPoint(x: 0, y: bottleHeight / 2)
+            
+        guard let parentNode = parent else { return }
+        let tipPositionInParent = convert(tipPositionInBottle, to: parentNode)
+        emitter.position = tipPositionInParent
+        emitter.targetNode = parentNode
+        emitter.zPosition = zPosition + 1
+        parentNode.addChild(emitter)
+
         pourEmitter = emitter
     }
     
