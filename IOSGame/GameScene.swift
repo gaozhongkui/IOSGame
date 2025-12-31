@@ -13,7 +13,7 @@ class GameScene: SKScene {
 
     override func didMove(to view: SKView) {
         backgroundColor = .darkGray
-        
+
         // 创建并添加瓶子
         let bottle = LiquidBottleNode(bottleImageName: "bottle", height: 400)
         bottle.position = CGPoint(x: frame.midX, y: frame.midY)
@@ -28,11 +28,11 @@ class GameScene: SKScene {
         if location.x > frame.midX {
             bottle.fillNextSlot()
         } else {
-            bottle.pourAnimation(toAngle: .pi / 3, duration: 1.2)
+            bottle.pourAnimation(toAngle: .pi / 2, duration: 1.2)
         }
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-      //  myBottle?.pourAnimation(toAngle: .pi / 3, duration: 1.2)
+        //  myBottle?.pourAnimation(toAngle: .pi / 3, duration: 1.2)
     }
 }

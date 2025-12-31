@@ -42,19 +42,35 @@ class LiquidBottleNode: SKNode {
         
         // 2. 液体 Shader
         let shaderSource = """
+        // 修改后的 Shader 关键部分
         void main() {
             vec2 uv = v_tex_coord;
             float time = u_time * 2.5;
-            float tilt = (uv.x - 0.5) * tan(u_rotation);
+            
+            // --- 修复点：限制角度在 -1.45 到 1.45 弧度之间（约 ±83 度） ---
+            // 这样可以避免 tan(pi/2) 导致的数值崩溃
+            float safeRotation = clamp(u_rotation, -1.45, 1.45);
+            float tilt = (uv.x - 0.5) * tan(safeRotation);
+            
             float wave = sin(uv.x * 7.0 + time) * 0.008;
+            
+            // 计算液体边界
             float currentLimit = u_percent - 0.02 + wave - tilt; 
             
             if (uv.y > currentLimit) discard;
 
             vec4 color = texture2D(u_palette, vec2(0.5, uv.y));
+            
+            // 槽位边界线处理
             float slotBoundary = fract(uv.y * 8.0);
-            if (slotBoundary < 0.03 || slotBoundary > 0.97) color.rgb *= 0.8;
-            if (uv.y > currentLimit - 0.02) color.rgb += 0.2;
+            if (slotBoundary < 0.03 || slotBoundary > 0.97) {
+                color.rgb *= 0.8;
+            }
+
+            // 顶层高亮处理
+            if (uv.y > currentLimit - 0.02) {
+                color.rgb += 0.2;
+            }
             
             gl_FragColor = color;
         }
@@ -153,7 +169,7 @@ class LiquidBottleNode: SKNode {
         emitter.particleSpeedRange = 80
         // 这里的角度需要根据瓶子 zRotation 动态调整（如果是向左倒）
         emitter.emissionAngle = (self.zRotation > 0) ? .pi : 0
-        emitter.emissionAngleRange = 0.2 
+        emitter.emissionAngleRange = 0.2
         
         // 4. 颜色与混合
         emitter.particleColor = color
@@ -165,7 +181,7 @@ class LiquidBottleNode: SKNode {
         emitter.particleScaleSpeed = -0.5   // 飞出后逐渐变小
         
         // 6. 物理感
-        emitter.yAcceleration = -1000       // 更强的重力，像液体坠落
+//        emitter.yAcceleration = -1000       // 更强的重力，像液体坠落
         emitter.particleAlphaSpeed = -0.6   // 消失前稍微变透明
         
         // 7. 位置：确保在瓶口位置
