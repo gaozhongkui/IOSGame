@@ -53,33 +53,33 @@ class LiquidBottleNode: SKNode {
         void main() {
             vec2 uv = v_tex_coord;
             float rot = u_rotation;
-            
+        
             // 1. 计算旋转后的投影高度
             float cosR = cos(rot);
             float sinR = sin(rot);
             float rotatedY = (uv.y - 0.5) * cosR + (uv.x - 0.5) * sinR + 0.5;
-            
+        
             // 2. 计算液位限制
             float wave = sin(uv.x * 7.0 + u_time * 2.5) * 0.005 * cosR;
             float currentLimit = u_percent + wave;
-            
+        
             // 3. 裁剪：无论如何，超过液面的部分都要丢弃
             if (rotatedY > currentLimit) discard;
 
             // --- 核心修正：平滑切换采样逻辑 ---
             // 计算旋转程度的绝对值 (0.0 到 1.0 之间)
             float rotFactor = abs(sinR); 
-            
+        
             // 我们混合两种采样方式：
             // 方式 A (直立时): 直接按高度采样 uv.y，保持槽位固定
             // 方式 B (倾斜时): 按比例采样 rotatedY / currentLimit，实现平铺
             float samplePos = mix(uv.y, rotatedY / (currentLimit + 0.001), rotFactor);
-            
+        
             // 确保采样不越界
             samplePos = clamp(samplePos, 0.0, 1.0);
-            
+        
             vec4 color = texture2D(u_palette, vec2(0.5, samplePos));
-            
+        
             // 4. 刻度线 (固定在瓶身上，所以用 uv.y)
             float slotBoundary = fract(uv.y * u_slot_count);
             if (slotBoundary < 0.03 || slotBoundary > 0.97) {
@@ -90,7 +90,7 @@ class LiquidBottleNode: SKNode {
             if (rotatedY > currentLimit - 0.015) {
                 color.rgb += 0.2;
             }
-            
+        
             gl_FragColor = color;
         }
         """
@@ -176,7 +176,7 @@ class LiquidBottleNode: SKNode {
         run(SKAction.sequence([
             tiltAction,
             SKAction.group([
-                SKAction.run { [weak self] in self?.startPourParticle(color: topColor) },
+                SKAction.run { [weak self] in self?.startPourParticle(color: topColor, targetY: 400) },
                 draining
             ]),
             SKAction.run { [weak self] in self?.stopPourParticle() },
@@ -218,51 +218,65 @@ class LiquidBottleNode: SKNode {
         UIGraphicsEndImageContext()
         return image != nil ? SKTexture(image: image!) : SKTexture()
     }
-    
-    private func startPourParticle(color: UIColor) {
+
+    /// 传入 targetY: 目标瓶口在父容器中的 Y 坐标
+    private func startPourParticle(color: UIColor, targetY: CGFloat) {
         stopPourParticle()
+        guard let parentNode = parent else { return }
         
         let emitter = SKEmitterNode()
         
-        // 1. 纹理：稍微调小一点点，让液滴更精致
-        emitter.particleTexture = createCircleTexture(radius: 8, color: .white)
+        // --- 1. 基础物理参数 ---
+        let gravity: CGFloat = 1800 // 重力加速度
+        emitter.yAcceleration = -gravity
+        emitter.particleSpeed = 150 // 初始喷出速度
+        emitter.particleSpeedRange = 20
         
-        // 2. 密度优化：大幅降低出生率 (从 80-100 降到 20-30)
-        // 这样粒子之间会有明显的间隙，看起来更像水滴
-        emitter.particleBirthRate = 25
-        emitter.particleLifetime = 1.0
+        // --- 2. 计算动态起点 ---
+        let mouthRadius: CGFloat = 15
+        let offsetX = (zRotation > 0) ? -mouthRadius : mouthRadius
+        let startPointInBottle = CGPoint(x: offsetX, y: (bottleHeight / 2) - 5)
+        let startPointInParent = convert(startPointInBottle, to: parentNode)
         
-        // 3. 速度与扩散：增加随机性，让液滴散开一点
-        emitter.particleSpeed = 350
-        emitter.particleSpeedRange = 150 // 让有的快有的慢
-        emitter.emissionAngle = (zRotation > 0) ? .pi : 0
-        emitter.emissionAngleRange = 0.25 // 稍微散开的角度
+        // --- 3. 核心数学：计算生命周期 ---
+        // 计算垂直下落距离 h
+        let dropDistance = abs(startPointInParent.y - targetY)
         
-        // 4. 颜色
+        // 自由落体近似公式：t = sqrt(2h/g)
+        // 加上调节系数 0.95 是为了抵消 particleSpeed 带来的向下初速度
+        var calculatedLifetime = sqrt(2.0 * dropDistance / gravity) * 0.95
+        
+        // 防止极端情况下 lifetime 为 0
+        calculatedLifetime = max(0.1, calculatedLifetime)
+        
+        emitter.particleLifetime = calculatedLifetime
+        emitter.particleLifetimeRange = 0.05 // 极小的随机感，让切口不至于像刀削一样齐
+        
+        // --- 4. 视觉优化 ---
+        emitter.particleTexture = createCircleTexture(radius: 7, color: .white)
+        emitter.particleBirthRate = 45
         emitter.particleColor = color
         emitter.particleColorBlendFactor = 1.0
         
-        // 5. 尺寸变化：让液滴在飞行过程中变小
+        // 让粒子在到达终点前快速变透明，产生“没入”感
+        // 如果想要粒子到达时依然凝实，可以把这个值调小
+        emitter.particleAlphaSpeed = -1.0 / calculatedLifetime
+        
         emitter.particleScale = 0.5
         emitter.particleScaleRange = 0.2
-        emitter.particleScaleSpeed = -0.4 // 飞出后逐渐变小消失
+        emitter.particleScaleSpeed = -0.2
         
-        // 6. 物理感（关键）：加入重力感，让液滴呈抛物线落下
-        emitter.yAcceleration = -800 // 负值代表向下坠落
+        // --- 5. 发射方向 ---
+        let baseAngle = (zRotation > 0) ? CGFloat.pi : 0
+        emitter.emissionAngle = baseAngle
+        emitter.emissionAngleRange = 0.1
         
-        // 7. 混合模式：如果是液体，通常用 Alpha 混合即可
-        emitter.particleAlpha = 1.0
-        emitter.particleAlphaSpeed = -0.8 // 快速淡出
-        
-        let tipPositionInBottle = CGPoint(x: -20, y: bottleHeight / 2)
-            
-        guard let parentNode = parent else { return }
-        let tipPositionInParent = convert(tipPositionInBottle, to: parentNode)
-        emitter.position = tipPositionInParent
+        // --- 6. 属性设置 ---
+        emitter.position = startPointInParent
         emitter.targetNode = parentNode
         emitter.zPosition = zPosition + 1
+        
         parentNode.addChild(emitter)
-
         pourEmitter = emitter
     }
     
