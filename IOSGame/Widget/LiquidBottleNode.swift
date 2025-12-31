@@ -35,8 +35,6 @@ class LiquidBottleNode: SKNode {
     @available(*, unavailable)
     required init?(coder aDecoder: NSCoder) { fatalError("init") }
 
-    // MARK: - 动态液位获取
-
     /// 获取当前瓶子“水面”在场景中的 Y 坐标
     func getLiquidSurfaceY() -> CGFloat {
         guard let parentNode = parent else { return position.y }
@@ -45,9 +43,7 @@ class LiquidBottleNode: SKNode {
         // 水面高度 = 底部 + (总高度 * 当前比例)
         return bottomY + (bottleHeight * currentPercent)
     }
-
-    // MARK: - 初始化
-
+    
     func setInitDefaultColor() {
         // 明确初始化为 maxSlots 长度的数组，填充透明色
         slotColors = Array(repeating: .clear, count: maxSlots)
@@ -115,8 +111,7 @@ class LiquidBottleNode: SKNode {
         addChild(bottleBorder)
     }
 
-    // MARK: - 增加/减少槽位动画
-
+    ///添加颜色
     func addFullSlot(color: SKColor, duration: TimeInterval = 0.8) {
         // 1. 严格检查：如果已经满了，或者正在动画，直接返回
         guard currentSlots < maxSlots, !isAnimating else { return }
@@ -153,17 +148,26 @@ class LiquidBottleNode: SKNode {
         ]))
     }
 
-    /// 核心改动：pourSlot 现在接收 targetBottle 对象，而不是死板的 targetY
+    ///倒出的方法
     func pourInto(targetBottle: LiquidBottleNode, duration: TimeInterval = 0.8) {
+        // 检查状态，防止重复触发
         guard currentSlots > 0, !isAnimating else { return }
         isAnimating = true
 
+        // --- 准备数据 ---
+        let originalPosition = position // 记录初始位置，用于后续归位
         let startP = currentPercent
         let nextSlots = currentSlots - 1
         let targetP = CGFloat(nextSlots) / CGFloat(maxSlots)
         let topColor = getCurrentTopColor()
 
-        // 1. 倾斜
+        // 1. 移动到目标瓶子右上方 (假设偏移量为：x+80, y+200，根据你的瓶子大小调整)
+        let targetPos = CGPoint(x: targetBottle.position.x + bottleHeight / 2,
+                                y: targetBottle.position.y + 200)
+        let moveTargetAction = SKAction.move(to: targetPos, duration: 0.5)
+        moveTargetAction.timingMode = .easeInEaseOut
+
+        // 2. 倾斜动画 (0.3s)
         let tiltAction = SKAction.customAction(withDuration: 0.3) { [weak self] _, elapsedTime in
             let t = elapsedTime / 0.3
             let rot = (.pi / 2) * t
@@ -171,32 +175,38 @@ class LiquidBottleNode: SKNode {
             self?.rotationUniform.floatValue = Float(rot)
         }
 
-        // 2. 倒出（动态计算 targetY）
+        // 3. 倒出动画 (duration)
         let draining = SKAction.customAction(withDuration: duration) { [weak self] _, elapsedTime in
             let t = elapsedTime / CGFloat(duration)
             self?.percentUniform.floatValue = Float(startP - (startP - targetP) * t)
 
-            // 每一帧都获取目标瓶子最新的液面高度
-            // 这样当目标瓶水位上涨时，粒子消失点也会跟着上移
+            // 动态更新粒子消失点（目标瓶液面高度）
             let currentSurfaceY = targetBottle.getLiquidSurfaceY()
             self?.updatePourParticle(color: topColor, targetY: currentSurfaceY)
         }
 
-        // 3. 回正
-        let resetAction = SKAction.customAction(withDuration: 0.3) { [weak self] _, elapsedTime in
+        // 4. 回正动画 (0.3s)
+        let resetTiltAction = SKAction.customAction(withDuration: 0.3) { [weak self] _, elapsedTime in
             let t = 1.0 - (elapsedTime / 0.3)
             let rot = (.pi / 2) * t
             self?.zRotation = rot
             self?.rotationUniform.floatValue = Float(rot)
         }
 
-        run(SKAction.sequence([
-            tiltAction,
-            SKAction.group([
+        // 5. 归位动画
+        let moveBackAction = SKAction.move(to: originalPosition, duration: 0.5)
+        moveBackAction.timingMode = .easeInEaseOut
+
+        // --- 组装完整的动作序列 ---
+        let sequence = SKAction.sequence([
+            moveTargetAction, // 先飞过去
+            tiltAction, // 倾斜
+            SKAction.group([ // 同时进行：本瓶减少，目标瓶增加
                 draining,
                 SKAction.run { targetBottle.addFullSlot(color: topColor, duration: duration) }
             ]),
             SKAction.run { [weak self] in
+                // 数据清理
                 self?.stopPourParticle()
                 self?.currentSlots = nextSlots
                 if nextSlots < (self?.slotColors.count ?? 0) {
@@ -204,27 +214,35 @@ class LiquidBottleNode: SKNode {
                     self?.updatePalette()
                 }
             },
-            resetAction,
-            SKAction.run { [weak self] in self?.isAnimating = false }
-        ]))
-    }
+            resetTiltAction, // 瓶身回正
+            moveBackAction, // 飞回原位
+            SKAction.run { [weak self] in
+                self?.isAnimating = false
+            }
+        ])
 
-    // MARK: - 粒子系统逻辑
+        run(sequence)
+    }
 
     private func updatePourParticle(color: UIColor, targetY: CGFloat) {
         guard let parentNode = parent else { return }
 
-        // 如果粒子发射器不存在，则创建
         if pourEmitter == nil {
             let emitter = SKEmitterNode()
             emitter.particleTexture = createCircleTexture(radius: 7, color: .white)
-            emitter.particleBirthRate = 60
-            emitter.yAcceleration = -1800
-            emitter.particleSpeed = 150
+            emitter.particleBirthRate = 80 // 稍微调高一点，让水流更密
+            emitter.yAcceleration = -2000 // 保持强大的重力
+
+            // --- 关键修改点 1: 消除水平干扰 ---
+            emitter.xAcceleration = 0
+            emitter.emissionAngleRange = 0 // 强制粒子只沿一个角度发射，不散开
+            emitter.particleSpeedRange = 0
+
+            emitter.particleSpeed = 100 // 给一个初始向下的推力
             emitter.particleColor = color
             emitter.particleColorBlendFactor = 1.0
-            emitter.particleScale = 0.5
-            emitter.particleScaleSpeed = -0.2
+            emitter.particleScale = 0.4
+            emitter.particleScaleSpeed = -0.1
             emitter.zPosition = zPosition + 1
             emitter.targetNode = parentNode
             parentNode.addChild(emitter)
@@ -234,20 +252,30 @@ class LiquidBottleNode: SKNode {
         guard let emitter = pourEmitter else { return }
 
         // 计算起点（瓶口）
+        // 假设瓶子高度为 bottleHeight，瓶口在 y 正方向顶部
         let mouthRadius: CGFloat = 16
+        // 根据旋转方向微调瓶口出水点
         let offsetX = (zRotation > 0) ? -mouthRadius : mouthRadius
         let startPoint = convert(CGPoint(x: offsetX, y: (bottleHeight / 2) - 5), to: parentNode)
 
         // 动态更新位置
         emitter.position = startPoint
-        emitter.emissionAngle = (zRotation > 0) ? .pi : 0
 
-        // 动态计算生命周期：掉落到当前液面的时间
+        // --- 关键修改点 2: 动态修正发射角度 ---
+        // 无论瓶子怎么转，我们希望在父容器坐标系中角度永远朝下 (-pi/2)
+        // 因为粒子是 parentNode 的子节点，我们要根据瓶子的旋转来抵消，使最终效果垂直
+        // 或者更简单的做法：直接给一个绝对值，因为 emissionAngle 受 targetNode 坐标系影响
+        emitter.emissionAngle = CGFloat(-Double.pi / 2)
+
+        // 动态计算生命周期
         let dropDistance = abs(startPoint.y - targetY)
         let gravity = abs(emitter.yAcceleration)
-        let calculatedLifetime = sqrt(2.0 * dropDistance / gravity) * 0.98
+
+        // 使用自由落体公式 t = sqrt(2h/g)
+        let calculatedLifetime = sqrt(2.0 * dropDistance / gravity)
 
         emitter.particleLifetime = max(0.05, calculatedLifetime)
+        // 让粒子在到达液面时刚好变透明
         emitter.particleAlphaSpeed = -1.0 / emitter.particleLifetime
     }
 
@@ -258,9 +286,7 @@ class LiquidBottleNode: SKNode {
         emitter.run(SKAction.sequence([wait, SKAction.removeFromParent()]))
         pourEmitter = nil
     }
-
-    // MARK: - 辅助方法
-
+    
     private func updatePalette() {
         let newTexture = createDynamicSlotTexture()
         liquid?.shader?.addUniform(SKUniform(name: "u_palette", texture: newTexture))
