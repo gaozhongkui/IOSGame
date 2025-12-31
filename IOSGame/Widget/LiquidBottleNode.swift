@@ -52,23 +52,45 @@ class LiquidBottleNode: SKNode {
         let shaderSource = """
         void main() {
             vec2 uv = v_tex_coord;
-            float time = u_time * 2.5;
-            float safeRotation = clamp(u_rotation, -1.45, 1.45);
-            float tilt = (uv.x - 0.5) * tan(safeRotation) * 0.8;
-            float wave = sin(uv.x * 7.0 + time) * 0.008;
-            float currentLimit = u_percent - 0.02 + wave - tilt; 
-        
-            if (uv.y > currentLimit) discard;
+            float rot = u_rotation;
+            
+            // 1. 计算旋转后的投影高度
+            float cosR = cos(rot);
+            float sinR = sin(rot);
+            float rotatedY = (uv.y - 0.5) * cosR + (uv.x - 0.5) * sinR + 0.5;
+            
+            // 2. 计算液位限制
+            float wave = sin(uv.x * 7.0 + u_time * 2.5) * 0.005 * cosR;
+            float currentLimit = u_percent + wave;
+            
+            // 3. 裁剪：无论如何，超过液面的部分都要丢弃
+            if (rotatedY > currentLimit) discard;
 
-            vec4 color = texture2D(u_palette, vec2(0.5, uv.y));
+            // --- 核心修正：平滑切换采样逻辑 ---
+            // 计算旋转程度的绝对值 (0.0 到 1.0 之间)
+            float rotFactor = abs(sinR); 
+            
+            // 我们混合两种采样方式：
+            // 方式 A (直立时): 直接按高度采样 uv.y，保持槽位固定
+            // 方式 B (倾斜时): 按比例采样 rotatedY / currentLimit，实现平铺
+            float samplePos = mix(uv.y, rotatedY / (currentLimit + 0.001), rotFactor);
+            
+            // 确保采样不越界
+            samplePos = clamp(samplePos, 0.0, 1.0);
+            
+            vec4 color = texture2D(u_palette, vec2(0.5, samplePos));
+            
+            // 4. 刻度线 (固定在瓶身上，所以用 uv.y)
             float slotBoundary = fract(uv.y * u_slot_count);
             if (slotBoundary < 0.03 || slotBoundary > 0.97) {
                 color.rgb *= 0.8;
             }
 
-            if (uv.y > currentLimit - 0.015) {
+            // 5. 液面边缘高亮
+            if (rotatedY > currentLimit - 0.015) {
                 color.rgb += 0.2;
             }
+            
             gl_FragColor = color;
         }
         """
@@ -123,32 +145,32 @@ class LiquidBottleNode: SKNode {
     func pourSlot(duration: TimeInterval = 0.8) {
         guard currentSlots > 0 else { return }
 
-        // 1. 记录起始和结束
         let startP = currentPercent
-        let nextSlots = currentSlots - 1 // 计算下一阶段的槽位数
+        let nextSlots = currentSlots - 1
         let targetP = CGFloat(nextSlots) / CGFloat(maxSlots)
-        
         let topColor = getCurrentTopColor()
         let angle: CGFloat = .pi / 2
         
-        // 2. 动画序列
+        // 1. 倾斜动作 (0.3秒)：此时 u_percent 不变，你会看到 2 槽液体由于重力“荡”向瓶口并平铺
         let tiltAction = SKAction.customAction(withDuration: 0.3) { [weak self] _, elapsedTime in
             let t = elapsedTime / 0.3
-            self?.zRotation = angle * t
-            self?.rotationUniform.floatValue = Float(self?.zRotation ?? 0)
+            let currentRot = angle * t
+            self?.zRotation = currentRot
+            self?.rotationUniform.floatValue = Float(currentRot)
         }
 
+        // 2. 倒出动作：percent 线性减小
         let draining = SKAction.customAction(withDuration: duration) { [weak self] _, elapsedTime in
             let t = elapsedTime / CGFloat(duration)
-            // 关键：在倒水过程中，百分比从 startP 线性降到 targetP
             let cp = startP - (startP - targetP) * t
             self?.percentUniform.floatValue = Float(cp)
         }
 
         let resetAction = SKAction.customAction(withDuration: 0.3) { [weak self] _, elapsedTime in
             let t = 1.0 - (elapsedTime / 0.3)
-            self?.zRotation = angle * t
-            self?.rotationUniform.floatValue = Float(self?.zRotation ?? 0)
+            let currentRot = angle * t
+            self?.zRotation = currentRot
+            self?.rotationUniform.floatValue = Float(currentRot)
         }
 
         run(SKAction.sequence([
@@ -160,9 +182,8 @@ class LiquidBottleNode: SKNode {
             SKAction.run { [weak self] in self?.stopPourParticle() },
             resetAction,
             SKAction.run { [weak self] in
-                // 动画彻底结束后，正式更新逻辑数据
+                // 归位后更新逻辑
                 self?.currentSlots = nextSlots
-                // 如果这一层倒完了，把 slotColors 对应位置设为透明
                 if nextSlots < (self?.slotColors.count ?? 0) {
                     self?.slotColors[nextSlots] = .clear
                     self?.updatePalette()
@@ -233,7 +254,7 @@ class LiquidBottleNode: SKNode {
         emitter.particleAlpha = 1.0
         emitter.particleAlphaSpeed = -0.8 // 快速淡出
         
-        let tipPositionInBottle = CGPoint(x: 0, y: bottleHeight / 2)
+        let tipPositionInBottle = CGPoint(x: -20, y: bottleHeight / 2)
             
         guard let parentNode = parent else { return }
         let tipPositionInParent = convert(tipPositionInBottle, to: parentNode)
