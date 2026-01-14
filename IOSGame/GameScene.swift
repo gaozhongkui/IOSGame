@@ -9,33 +9,38 @@ import GameplayKit
 import SpriteKit
 
 class GameScene: SKScene {
+    var myBottle: LiquidBottleNode?
+    var myBottle1: LiquidBottleNode?
+
     override func didMove(to view: SKView) {
-        backgroundColor = .white
+        backgroundColor = .darkGray
 
-        let sprite = SKSpriteNode(imageNamed: "card")
-        sprite.size = CGSize(width: 100, height: (sprite.size.height * 100) / sprite.size.width)
-        sprite.position = CGPoint(x: frame.midX, y: frame.midY)
-        addChild(sprite)
+        // 创建并添加瓶子
+        let bottle = LiquidBottleNode(bottleImageName: "bottle", height: 300)
+        bottle.position = CGPoint(x: frame.midX, y: frame.midY)
+        addChild(bottle)
 
-        // GLSL Shader
-        let bendShader = SKShader(source: """
-        void main() {
-            vec2 uv = v_tex_coord;
+        let bottle1 = LiquidBottleNode(bottleImageName: "bottle", height: 300)
+        bottle1.position = CGPoint(x: frame.midX - 100, y: frame.midY)
+        addChild(bottle1)
 
-            // 水平弯曲：根据 y 坐标拉伸 x 坐标
-            float bendAmount = 0.3; // 调整弯曲程度
-            uv.x += bendAmount * (uv.y - 0.5) * (uv.y - 0.5); // y 越靠近中间弯曲越小
+        myBottle1 = bottle1
 
-            // 垂直弯曲：根据 x 坐标拉伸 y 坐标
-            uv.y += bendAmount * (uv.x - 0.5) * (uv.x - 0.5);
+        myBottle = bottle
+    }
 
-            gl_FragColor = texture2D(u_texture, uv);
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let touch = touches.first, let bottle = myBottle else { return }
+        let location = touch.location(in: self)
+
+        if location.x > frame.midX {
+            bottle.addFullSlot(color: .random)
+        } else {
+            bottle.pourInto(targetBottle: myBottle1!)
         }
-        """)
+    }
 
-        sprite.shader = bendShader
-        
-        let bendUniform = SKUniform(name: "u_bendAmount", float: 0.3)
-        bendShader.addUniform(bendUniform)
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        //  myBottle?.pourAnimation(toAngle: .pi / 3, duration: 1.2)
     }
 }
